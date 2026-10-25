@@ -282,51 +282,86 @@ class VialRGBHandler(BasicHandler):
 
         row = container.rowCount()
 
+        self.lbl_rgb_layer = QLabel(tr("RGBConfigurator", "RGB Layer"))
+        container.addWidget(self.lbl_rgb_layer, row, 0)
+        self.rgb_layer = QComboBox()
+        self.rgb_layer.currentIndexChanged.connect(self.on_rgb_layer_changed)
+        container.addWidget(self.rgb_layer, row, 1)
+
         self.lbl_rgb_effect = QLabel(tr("RGBConfigurator", "RGB Effect"))
-        container.addWidget(self.lbl_rgb_effect, row, 0)
+        container.addWidget(self.lbl_rgb_effect, row + 1, 0)
         self.rgb_effect = QComboBox()
         self.rgb_effect.addItem("0")
         self.rgb_effect.addItem("1")
         self.rgb_effect.addItem("2")
         self.rgb_effect.addItem("3")
         self.rgb_effect.currentIndexChanged.connect(self.on_rgb_effect_changed)
-        container.addWidget(self.rgb_effect, row, 1)
+        container.addWidget(self.rgb_effect, row + 1, 1)
 
         self.lbl_rgb_color = QLabel(tr("RGBConfigurator", "RGB Color"))
-        container.addWidget(self.lbl_rgb_color, row + 1, 0)
+        container.addWidget(self.lbl_rgb_color, row + 2, 0)
         self.rgb_color = ClickableLabel(" ")
         self.rgb_color.clicked.connect(self.on_rgb_color)
-        container.addWidget(self.rgb_color, row + 1, 1)
+        container.addWidget(self.rgb_color, row + 2, 1)
 
         self.lbl_rgb_brightness = QLabel(tr("RGBConfigurator", "RGB Brightness"))
-        container.addWidget(self.lbl_rgb_brightness, row + 2, 0)
+        container.addWidget(self.lbl_rgb_brightness, row + 3, 0)
         self.rgb_brightness = QSlider(QtCore.Qt.Horizontal)
         self.rgb_brightness.setMinimum(0)
         self.rgb_brightness.setMaximum(255)
         self.rgb_brightness.valueChanged.connect(self.on_rgb_brightness_changed)
-        container.addWidget(self.rgb_brightness, row + 2, 1)
+        container.addWidget(self.rgb_brightness, row + 3, 1)
 
         self.lbl_rgb_speed = QLabel(tr("RGBConfigurator", "RGB Speed"))
-        container.addWidget(self.lbl_rgb_speed, row + 3, 0)
+        container.addWidget(self.lbl_rgb_speed, row + 4, 0)
         self.rgb_speed = QSlider(QtCore.Qt.Horizontal)
         self.rgb_speed.setMinimum(0)
         self.rgb_speed.setMaximum(255)
         self.rgb_speed.valueChanged.connect(self.on_rgb_speed_changed)
-        container.addWidget(self.rgb_speed, row + 3, 1)
+        container.addWidget(self.rgb_speed, row + 4, 1)
 
-        self.widgets = [self.lbl_rgb_effect, self.rgb_effect, self.lbl_rgb_brightness, self.rgb_brightness,
-                        self.lbl_rgb_color, self.rgb_color, self.lbl_rgb_speed, self.rgb_speed]
+        self.widgets = [self.lbl_rgb_layer, self.rgb_layer, self.lbl_rgb_effect, self.rgb_effect,
+                        self.lbl_rgb_brightness, self.rgb_brightness, self.lbl_rgb_color, self.rgb_color,
+                        self.lbl_rgb_speed, self.rgb_speed]
 
         self.effects = []
 
+    def has_layer_support(self):
+        return getattr(self.keyboard, "rgb_layer_support", False)
+
+    def selected_layer(self):
+        return self.rgb_layer.currentIndex() if self.has_layer_support() else 0
+
+    def current_cfg(self):
+        if self.has_layer_support():
+            return self.keyboard.rgb_layer_configs[self.selected_layer()]
+        return {"mode": self.keyboard.rgb_mode, "speed": self.keyboard.rgb_speed,
+                "hue": self.keyboard.rgb_hsv[0], "sat": self.keyboard.rgb_hsv[1], "val": self.keyboard.rgb_hsv[2]}
+
+    def on_rgb_layer_changed(self, index):
+        if not self.valid() or index < 0:
+            return
+        self.block_signals()
+        self.update_from_layer(index)
+        self.unblock_signals()
+
     def on_rgb_brightness_changed(self, value):
-        self.keyboard.set_vialrgb_brightness(value)
+        if self.has_layer_support():
+            self.keyboard.set_vialrgb_layer_brightness(self.selected_layer(), value)
+        else:
+            self.keyboard.set_vialrgb_brightness(value)
 
     def on_rgb_speed_changed(self, value):
-        self.keyboard.set_vialrgb_speed(value)
+        if self.has_layer_support():
+            self.keyboard.set_vialrgb_layer_speed(self.selected_layer(), value)
+        else:
+            self.keyboard.set_vialrgb_speed(value)
 
     def on_rgb_effect_changed(self, index):
-        self.keyboard.set_vialrgb_mode(self.effects[index].idx)
+        if self.has_layer_support():
+            self.keyboard.set_vialrgb_layer_mode(self.selected_layer(), self.effects[index].idx)
+        else:
+            self.keyboard.set_vialrgb_mode(self.effects[index].idx)
 
     def on_rgb_color(self):
         self.dlg_color = QColorDialog()
@@ -343,13 +378,16 @@ class VialRGBHandler(BasicHandler):
         h, s, v, a = color.getHsvF()
         if h < 0:
             h = 0
-        self.keyboard.set_vialrgb_color(int(255 * h), int(255 * s), self.keyboard.rgb_hsv[2])
+        if self.has_layer_support():
+            self.keyboard.set_vialrgb_layer_color(self.selected_layer(), int(255 * h), int(255 * s),
+                                                  self.current_cfg()["val"])
+        else:
+            self.keyboard.set_vialrgb_color(int(255 * h), int(255 * s), self.keyboard.rgb_hsv[2])
         self.update.emit()
 
     def current_color(self):
-        return QColor.fromHsvF(self.keyboard.rgb_hsv[0] / 255.0,
-                               self.keyboard.rgb_hsv[1] / 255.0,
-                               1.0)
+        cfg = self.current_cfg()
+        return QColor.fromHsvF(cfg["hue"] / 255.0, cfg["sat"] / 255.0, 1.0)
 
     def rebuild_effects(self):
         self.effects = []
@@ -361,19 +399,44 @@ class VialRGBHandler(BasicHandler):
         for effect in self.effects:
             self.rgb_effect.addItem(effect.name)
 
+    def rebuild_layers(self):
+        if not self.has_layer_support():
+            self.lbl_rgb_layer.hide()
+            self.rgb_layer.hide()
+            return
+
+        self.lbl_rgb_layer.show()
+        self.rgb_layer.show()
+
+        current = self.rgb_layer.currentIndex()
+        if current < 0 or current >= self.keyboard.layers:
+            current = 0
+
+        self.rgb_layer.clear()
+        for layer in range(self.keyboard.layers):
+            self.rgb_layer.addItem(tr("RGBConfigurator", "Layer {}").format(layer))
+        self.rgb_layer.setCurrentIndex(current)
+
+    def update_from_layer(self, layer):
+        if self.has_layer_support() and (layer < 0 or layer >= len(self.keyboard.rgb_layer_configs)):
+            return
+        cfg = self.current_cfg()
+        for x, effect in enumerate(self.effects):
+            if effect.idx == cfg["mode"]:
+                self.rgb_effect.setCurrentIndex(x)
+                break
+        self.rgb_brightness.setMaximum(self.keyboard.rgb_maximum_brightness)
+        self.rgb_brightness.setValue(cfg["val"])
+        self.rgb_speed.setValue(cfg["speed"])
+        self.rgb_color.setStyleSheet("QWidget { background-color: %s}" % self.current_color().name())
+
     def update_from_keyboard(self):
         if not self.valid():
             return
 
         self.rebuild_effects()
-        for x, effect in enumerate(self.effects):
-            if effect.idx == self.keyboard.rgb_mode:
-                self.rgb_effect.setCurrentIndex(x)
-                break
-        self.rgb_brightness.setMaximum(self.keyboard.rgb_maximum_brightness)
-        self.rgb_brightness.setValue(self.keyboard.rgb_hsv[2])
-        self.rgb_speed.setValue(self.keyboard.rgb_speed)
-        self.rgb_color.setStyleSheet("QWidget { background-color: %s}" % self.current_color().name())
+        self.rebuild_layers()
+        self.update_from_layer(self.selected_layer())
 
     def valid(self):
         return isinstance(self.device, VialKeyboard) and self.device.keyboard.lighting_vialrgb

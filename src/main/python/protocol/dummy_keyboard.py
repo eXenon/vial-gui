@@ -84,8 +84,9 @@ class DummyKeyboard(Keyboard):
             self.lighting_vialrgb = self.definition["lighting"] == "vialrgb"
 
         if self.lighting_vialrgb:
-            self.rgb_version = 1
+            self.rgb_version = 2
             self.rgb_maximum_brightness = 128
+            self.rgb_layer_support = True
 
             self.rgb_supported_effects = {0, 1, 2, 3}
 
@@ -105,3 +106,7 @@ class DummyKeyboard(Keyboard):
             self.rgb_mode = 2
             self.rgb_speed = 90
             self.rgb_hsv = (16, 32, 64)
+            self.rgb_layer_configs = [
+                {"mode": 2, "speed": 90, "hue": 16, "sat": 32, "val": 64}
+                for _ in range(self.layers)
+            ]

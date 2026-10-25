@@ -13,7 +13,8 @@ from protocol.constants import CMD_VIA_GET_PROTOCOL_VERSION, CMD_VIA_GET_KEYBOAR
     CMD_VIA_GET_LAYER_COUNT, CMD_VIA_KEYMAP_GET_BUFFER, CMD_VIA_VIAL_PREFIX, VIA_LAYOUT_OPTIONS, \
     VIA_SWITCH_MATRIX_STATE, QMK_BACKLIGHT_BRIGHTNESS, QMK_BACKLIGHT_EFFECT, QMK_RGBLIGHT_BRIGHTNESS, \
     QMK_RGBLIGHT_EFFECT, QMK_RGBLIGHT_EFFECT_SPEED, QMK_RGBLIGHT_COLOR, VIALRGB_GET_INFO, VIALRGB_GET_MODE, \
-    VIALRGB_GET_SUPPORTED, VIALRGB_SET_MODE, CMD_VIAL_GET_KEYBOARD_ID, CMD_VIAL_GET_SIZE, CMD_VIAL_GET_DEFINITION, \
+    VIALRGB_GET_SUPPORTED, VIALRGB_GET_LAYER, VIALRGB_SET_MODE, VIALRGB_SET_LAYER, CMD_VIAL_GET_KEYBOARD_ID, \
+    CMD_VIAL_GET_SIZE, CMD_VIAL_GET_DEFINITION, \
     CMD_VIAL_GET_ENCODER, CMD_VIAL_SET_ENCODER, CMD_VIAL_GET_UNLOCK_STATUS, CMD_VIAL_UNLOCK_START, CMD_VIAL_UNLOCK_POLL, \
     CMD_VIAL_LOCK, CMD_VIAL_QMK_SETTINGS_QUERY, CMD_VIAL_QMK_SETTINGS_GET, CMD_VIAL_QMK_SETTINGS_SET, \
     CMD_VIAL_QMK_SETTINGS_RESET, BUFFER_FETCH_CHUNK, VIAL_PROTOCOL_QMK_SETTINGS
@@ -66,6 +67,8 @@ class Keyboard(ProtocolMacro, ProtocolDynamic, ProtocolTapDance, ProtocolCombo, 
         self.rgb_mode = self.rgb_speed = self.rgb_version = self.rgb_maximum_brightness = -1
         self.rgb_hsv = (0, 0, 0)
         self.rgb_supported_effects = set()
+        self.rgb_layer_support = False
+        self.rgb_layer_configs = []
 
         self.via_protocol = self.vial_protocol = self.keyboard_id = -1
 
@@ -242,10 +245,11 @@ class Keyboard(ProtocolMacro, ProtocolDynamic, ProtocolTapDance, ProtocolCombo, 
             data = self.usb_send(self.dev, struct.pack("BB", CMD_VIA_LIGHTING_GET_VALUE, VIALRGB_GET_INFO),
                                  retries=20)[2:]
             self.rgb_version = data[0] | (data[1] << 8)
-            if self.rgb_version != 1:
+            if self.rgb_version < 1:
                 raise RuntimeError("Unsupported VialRGB protocol ({}), update your Vial version to latest"
                                    .format(self.rgb_version))
             self.rgb_maximum_brightness = data[2]
+            self.rgb_layer_support = self.rgb_version >= 2
 
             self.rgb_supported_effects = {0}
             max_effect = 0
@@ -278,11 +282,30 @@ class Keyboard(ProtocolMacro, ProtocolDynamic, ProtocolTapDance, ProtocolCombo, 
                 self.dev, struct.pack(">BB", CMD_VIA_LIGHTING_GET_VALUE, QMK_BACKLIGHT_EFFECT), retries=20)[2]
 
         if self.lighting_vialrgb:
-            data = self.usb_send(self.dev, struct.pack("BB", CMD_VIA_LIGHTING_GET_VALUE, VIALRGB_GET_MODE),
-                                 retries=20)[2:]
-            self.rgb_mode = int.from_bytes(data[0:2], byteorder="little")
-            self.rgb_speed = data[2]
-            self.rgb_hsv = (data[3], data[4], data[5])
+            if self.rgb_layer_support:
+                self.rgb_layer_configs = []
+                for layer in range(self.layers):
+                    data = self.usb_send(self.dev, struct.pack("BBB", CMD_VIA_LIGHTING_GET_VALUE,
+                                                               VIALRGB_GET_LAYER, layer), retries=20)[2:]
+                    self.rgb_layer_configs.append({
+                        "mode": int.from_bytes(data[0:2], byteorder="little"),
+                        "speed": data[2],
+                        "hue": data[3],
+                        "sat": data[4],
+                        "val": data[5],
+                    })
+                # keep legacy single-config attributes in sync with layer 0
+                self.rgb_mode = self.rgb_layer_configs[0]["mode"]
+                self.rgb_speed = self.rgb_layer_configs[0]["speed"]
+                self.rgb_hsv = (self.rgb_layer_configs[0]["hue"], self.rgb_layer_configs[0]["sat"],
+                                self.rgb_layer_configs[0]["val"])
+            else:
+                data = self.usb_send(self.dev, struct.pack("BB", CMD_VIA_LIGHTING_GET_VALUE, VIALRGB_GET_MODE),
+                                     retries=20)[2:]
+                self.rgb_mode = int.from_bytes(data[0:2], byteorder="little")
+                self.rgb_speed = data[2]
+                self.rgb_hsv = (data[3], data[4], data[5])
+                self.rgb_layer_configs = []
 
     def reload_settings(self):
         self.settings = dict()
@@ -520,6 +543,31 @@ class Keyboard(ProtocolMacro, ProtocolDynamic, ProtocolTapDance, ProtocolCombo, 
     def qmk_settings_reset(self):
         self.usb_send(self.dev, struct.pack("BB", CMD_VIA_VIAL_PREFIX, CMD_VIAL_QMK_SETTINGS_RESET))
 
+    def _vialrgb_set_layer(self, layer):
+        cfg = self.rgb_layer_configs[layer]
+        self.usb_send(self.dev, struct.pack("<BBB H BBBB", CMD_VIA_LIGHTING_SET_VALUE, VIALRGB_SET_LAYER,
+                                            layer, cfg["mode"], cfg["speed"], cfg["hue"], cfg["sat"], cfg["val"]),
+                      retries=20)
+
+    def set_vialrgb_layer_brightness(self, layer, value):
+        self.rgb_layer_configs[layer]["val"] = value
+        self._vialrgb_set_layer(layer)
+
+    def set_vialrgb_layer_speed(self, layer, value):
+        self.rgb_layer_configs[layer]["speed"] = value
+        self._vialrgb_set_layer(layer)
+
+    def set_vialrgb_layer_mode(self, layer, value):
+        self.rgb_layer_configs[layer]["mode"] = value
+        self._vialrgb_set_layer(layer)
+
+    def set_vialrgb_layer_color(self, layer, h, s, v):
+        self.rgb_layer_configs[layer]["hue"] = h
+        self.rgb_layer_configs[layer]["sat"] = s
+        self.rgb_layer_configs[layer]["val"] = v
+        self._vialrgb_set_layer(layer)
+
+    # Legacy single-config setter (VialRGB protocol v1)
     def _vialrgb_set_mode(self):
         self.usb_send(self.dev, struct.pack("BBHBBBB", CMD_VIA_LIGHTING_SET_VALUE, VIALRGB_SET_MODE,
                                             self.rgb_mode, self.rgb_speed,
